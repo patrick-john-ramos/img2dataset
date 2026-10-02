@@ -147,6 +147,7 @@ class Reader:
 
         # Filter out blocklisted hosts
         if self.blocklist:
+            before_count = df.num_rows
             def is_blocked(url):
                 try:
                     return urlparse(url).hostname in self.blocklist
@@ -158,6 +159,8 @@ class Reader:
             mask = df_pandas["url"].apply(is_blocked)
             df_pandas = df_pandas[~mask]
             df = pa.Table.from_pandas(df_pandas)
+            after_count = df.num_rows
+            print(f"Blocklisted {before_count - after_count} rows ({before_count} -> {after_count})")
 
         number_samples = df.num_rows
 
