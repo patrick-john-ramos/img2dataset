@@ -14,6 +14,7 @@ import pyarrow as pa
 import traceback
 import socket
 from urllib.parse import urlparse
+from datetime import datetime
 
 import fsspec
 from .logger import CappedCounter
@@ -44,6 +45,15 @@ def download_image(row, timeout, user_agent_token, disallowed_header_directives,
     user_agent_string = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:72.0) Gecko/20100101 Firefox/72.0"
     if user_agent_token:
         user_agent_string += f" (compatible; {user_agent_token}; +https://github.com/rom1504/img2dataset)"
+    
+    # Resolve IP address from URL
+    ip_address = None
+    try:
+        parsed_url = urlparse(url)
+        ip_address = socket.gethostbyname(parsed_url.hostname)
+    except Exception:
+        pass
+    
     try:
         request = urllib.request.Request(url, data=None, headers={"User-Agent": user_agent_string})
         ctx = ssl.create_default_context()
@@ -52,28 +62,22 @@ def download_image(row, timeout, user_agent_token, disallowed_header_directives,
             ctx.verify_mode = ssl.CERT_NONE
         download_start = time.time()
         with urllib.request.urlopen(request, context=ctx, timeout=timeout) as r:
-            download_timestamp = time.time()
+            download_timestamp = datetime.now()
             status_code = r.getcode()
             if disallowed_header_directives and is_disallowed(
                 r.headers,
                 user_agent_token,
                 disallowed_header_directives,
             ):
-                return key, None, "Use of image disallowed by X-Robots-Tag directive", None, status_code, download_timestamp
+                return key, None, "Use of image disallowed by X-Robots-Tag directive", ip_address, status_code, download_timestamp
             img_stream = io.BytesIO(r.read())
-        return key, img_stream, None, None, status_code, download_timestamp
+        return key, img_stream, None, ip_address, status_code, download_timestamp
     except Exception as err:  # pylint: disable=broad-except
-        download_timestamp = time.time()
-        status_code = None
-        ip_address = None
-        try:
-            parsed_url = urlparse(url)
-            ip_address = socket.gethostbyname(parsed_url.hostname)
-        except Exception:
-            pass
+        download_timestamp = datetime.now()
+        err_msg = str(err)
         if img_stream is not None:
             img_stream.close()
-        return key, None, str(err), ip_address, status_code, download_timestamp
+        return key, None, err_msg, ip_address, err_msg, download_timestamp
 
 
 def download_image_with_retry(
