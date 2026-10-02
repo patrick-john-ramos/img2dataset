@@ -199,6 +199,8 @@ def write_stats(
         parquet_file = f"{output_path}/{shard_name}_log.parquet"
         # Convert log to DataFrame
         df = pd.DataFrame(log, columns=["url", "ip_address", "http_status_code", "download_timestamp"])
+        # Ensure http_status_code is string type to handle both int codes and error messages
+        df["http_status_code"] = df["http_status_code"].astype(str)
         table = pa.Table.from_pandas(df)
         with fs.open(parquet_file, "wb") as f:
             pq.write_table(table, f)
