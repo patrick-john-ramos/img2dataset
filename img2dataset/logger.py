@@ -8,6 +8,9 @@ import json
 import multiprocessing
 import queue
 import traceback
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 class CappedCounter:
@@ -170,6 +173,7 @@ def write_stats(
     end_time,
     status_dict,
     oom_shard_count,
+    log=None,
 ):
     """Write stats to disk"""
     stats = {
@@ -189,6 +193,15 @@ def write_stats(
     json_file = f"{output_path}/{shard_name}_stats.json"
     with fs.open(json_file, "w") as f:
         json.dump(stats, f, indent=4)
+    
+    # Save log as parquet file if provided
+    if log is not None:
+        parquet_file = f"{output_path}/{shard_name}_log.parquet"
+        # Convert log to DataFrame
+        df = pd.DataFrame(log, columns=["url", "ip_address", "http_status_code", "download_timestamp"])
+        table = pa.Table.from_pandas(df)
+        with fs.open(parquet_file, "wb") as f:
+            pq.write_table(table, f)
 
 
 # https://docs.python.org/3/library/multiprocessing.html

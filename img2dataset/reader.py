@@ -9,6 +9,8 @@ import pyarrow.csv as csv_pa
 import pyarrow.json as json_pa
 import pyarrow as pa
 import pandas as pd
+from urllib.parse import urlparse
+from typing import List, Optional, Union
 
 
 class Reader:
@@ -41,6 +43,7 @@ class Reader:
         done_shards,
         tmp_path,
         start_shard_id: int = 0,
+        blocklist: Optional[Union[List[str], str]] = None,
     ) -> None:
         self.input_format = input_format
         self.url_col = url_col
@@ -51,6 +54,16 @@ class Reader:
         self.number_sample_per_shard = number_sample_per_shard
         self.done_shards = done_shards
         self.start_shard_id = start_shard_id
+
+        # Load blocklist
+        self.blocklist = set()
+        if blocklist is not None:
+            if isinstance(blocklist, str):
+                # Load from file
+                with open(blocklist, "r") as f:
+                    self.blocklist = set(line.strip() for line in f if line.strip())
+            else:
+                self.blocklist = set(blocklist)
 
         fs, url_path = fsspec.core.url_to_fs(url_list)
         self.fs = fs
@@ -131,6 +144,20 @@ class Reader:
         column_names = [c if c != self.url_col else "url" for c in column_names]
 
         df = df.rename_columns(column_names)
+
+        # Filter out blocklisted hosts
+        if self.blocklist:
+            def is_blocked(url):
+                try:
+                    return urlparse(url).hostname in self.blocklist
+                except Exception:
+                    return False
+
+            # Convert to pandas for filtering
+            df_pandas = df.to_pandas()
+            mask = df_pandas["url"].apply(is_blocked)
+            df_pandas = df_pandas[~mask]
+            df = pa.Table.from_pandas(df_pandas)
 
         number_samples = df.num_rows
 

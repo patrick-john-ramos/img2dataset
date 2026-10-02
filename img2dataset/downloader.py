@@ -12,6 +12,8 @@ import time
 import hashlib
 import pyarrow as pa
 import traceback
+import socket
+from urllib.parse import urlparse
 
 import fsspec
 from .logger import CappedCounter
@@ -48,19 +50,30 @@ def download_image(row, timeout, user_agent_token, disallowed_header_directives,
         if ignore_ssl_certificate:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
+        download_start = time.time()
         with urllib.request.urlopen(request, context=ctx, timeout=timeout) as r:
+            download_timestamp = time.time()
+            status_code = r.getcode()
             if disallowed_header_directives and is_disallowed(
                 r.headers,
                 user_agent_token,
                 disallowed_header_directives,
             ):
-                return key, None, "Use of image disallowed by X-Robots-Tag directive"
+                return key, None, "Use of image disallowed by X-Robots-Tag directive", None, status_code, download_timestamp
             img_stream = io.BytesIO(r.read())
-        return key, img_stream, None
+        return key, img_stream, None, None, status_code, download_timestamp
     except Exception as err:  # pylint: disable=broad-except
+        download_timestamp = time.time()
+        status_code = None
+        ip_address = None
+        try:
+            parsed_url = urlparse(url)
+            ip_address = socket.gethostbyname(parsed_url.hostname)
+        except Exception:
+            pass
         if img_stream is not None:
             img_stream.close()
-        return key, None, str(err)
+        return key, None, str(err), ip_address, status_code, download_timestamp
 
 
 def download_image_with_retry(
@@ -73,7 +86,7 @@ def download_image_with_retry(
 ):
     """Download an image with urllib, retrying if it fails."""
     for _ in range(retries + 1):
-        key, img_stream, err = download_image(
+        key, img_stream, err, ip_address, status_code, download_timestamp = download_image(
             row,
             timeout,
             user_agent_token,
@@ -81,8 +94,8 @@ def download_image_with_retry(
             ignore_ssl_certificate,
         )
         if img_stream is not None:
-            return key, img_stream, err
-    return key, None, err
+            return key, img_stream, err, ip_address, status_code, download_timestamp
+    return key, None, err, ip_address, status_code, download_timestamp
 
 
 def compute_key(key, shard_id, oom_sample_per_shard, oom_shard_count):
@@ -200,6 +213,8 @@ class Downloader:
         bbox_indice = self.column_list.index(self.blurring_bbox_col) if self.blurring_bbox_col is not None else None
         key_url_list = [(key, x[url_indice]) for key, x in shard_to_dl]
 
+        log = []
+
         # this prevents an accumulation of more than twice the number of threads in sample ready to resize
         # limit the memory usage
         semaphore = Semaphore(self.thread_count * 2)
@@ -222,7 +237,7 @@ class Downloader:
         )
         oom_sample_per_shard = math.ceil(math.log10(self.number_sample_per_shard))
         with ThreadPool(self.thread_count) as thread_pool:
-            for key, img_stream, error_message in thread_pool.imap_unordered(
+            for key, img_stream, error_message, ip_address, status_code, download_timestamp in thread_pool.imap_unordered(
                 lambda x: download_image_with_retry(
                     x,
                     timeout=self.timeout,
@@ -268,6 +283,7 @@ class Downloader:
                             sample_data[caption_indice] if caption_indice is not None else None,
                             meta,
                         )
+                        log.append((sample_data[url_indice], ip_address, status_code, download_timestamp))
                         semaphore.release()
                         continue
 
@@ -288,6 +304,7 @@ class Downloader:
                             )
                             img_stream.close()
                             del img_stream
+                            log.append((sample_data[url_indice], ip_address, status_code, download_timestamp))
                             semaphore.release()
                             continue
 
@@ -315,6 +332,7 @@ class Downloader:
                         )
                         img_stream.close()
                         del img_stream
+                        log.append((sample_data[url_indice], ip_address, status_code, download_timestamp))
                         semaphore.release()
                         continue
                     successes += 1
@@ -346,6 +364,7 @@ class Downloader:
                     meta["original_height"] = original_height
                     img_stream.close()
                     del img_stream
+                    log.append((sample_data[url_indice], ip_address, status_code, download_timestamp))
 
                     sample_writer.write(
                         img,
@@ -375,5 +394,6 @@ class Downloader:
             end_time,
             status_dict,
             self.oom_shard_count,
+            log,
         )
         fs.rm(shard_path)
